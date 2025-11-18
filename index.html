@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kanban — Minimal (HTML/CSS/JS)</title>
+  <meta name="description" content="Sistema Kanban simples (estilo Trello) usando HTML, CSS e JavaScript puro. Dados persistidos em LocalStorage." />
+
+  <style>
+    :root{
+      --bg: #0f1724;
+      --card: #0b1220;
+      --muted: #98A0B3;
+      --accent: #7c5cff;
+      --accent-2: #00d4ff;
+      --success: #22c55e;
+      --glass: rgba(255,255,255,0.03);
+      --radius: 12px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg) 0%, #081018 100%);color:#e6eef8}
+
+    header{
+      display:flex;align-items:center;justify-content:space-between;padding:18px 20px;gap:12px;
+    }
+    header h1{font-size:18px;margin:0;letter-spacing:0.2px}
+    header .actions{display:flex;gap:8px}
+    button{background:var(--glass);border:1px solid rgba(255,255,255,0.04);color:inherit;padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+    button.ghost{background:transparent;border:1px dashed rgba(255,255,255,0.04);font-weight:500}
+
+    main{padding:12px 18px}
+    .board{display:flex;gap:18px;align-items:flex-start;overflow:auto;padding-bottom:18px}
+
+    .column{
+      min-width:280px;max-width:320px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);padding:12px;border-radius:var(--radius);border:1px solid rgba(255,255,255,0.03);
+      display:flex;flex-direction:column;gap:12px;height:70vh;flex:0 0 320px;
+    }
+    .col-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .col-head h2{font-size:14px;margin:0;color:#dfe9ff}
+    .count{font-size:13px;color:var(--muted)}
+
+    .tasks{flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:6px}
+
+    .card{
+      background:linear-gradient(180deg,#0b1220 0%, #07101a 100%);padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.02);cursor:grab;box-shadow:0 6px 18px rgba(2,6,23,0.6);display:flex;flex-direction:column;gap:8px
+    }
+    .card.dragging{opacity:0.55;transform:scale(0.995)}
+    .card p{margin:0;font-size:14px;color:#e9f1ff}
+    .card .meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted)}
+
+    .add-row{display:flex;gap:8px;margin-top:6px}
+    input[type="text"], textarea{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:8px;border-radius:8px;color:inherit;outline:none;width:100%}
+
+    .empty-drop{border:2px dashed rgba(255,255,255,0.02);padding:8px;border-radius:8px;text-align:center;color:var(--muted);font-size:13px}
+
+    /* responsive */
+    @media (max-width:900px){
+      .board{padding:4px}
+      .column{min-width:240px;flex:0 0 260px}
+    }
+    @media (max-width:520px){
+      header{padding:12px}
+      .board{gap:12px}
+      .column{min-width:220px;flex:0 0 220px}
+      .column{height:64vh}
+    }
+
+    /* small helper */
+    .muted{color:var(--muted);font-size:13px}
+    .pill{padding:4px 8px;border-radius:999px;font-size:12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.02)}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Kanban — Minimal</h1>
+      <div class="muted">Arraste e solte cartões. Estado salvo automaticamente no LocalStorage.</div>
+    </div>
+    <div class="actions">
+      <button id="btn-reset" class="ghost" title="Limpar board (remove todos os cartões)">Limpar</button>
+      <button id="btn-export" title="Exportar JSON do board">Exportar</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="board" id="board" aria-label="Quadro Kanban">
+      <!-- Colunas serão renderizadas por JavaScript -->
+    </section>
+  </main>
+
+  <template id="column-template">
+    <div class="column" draggable="false">
+      <div class="col-head">
+        <h2 class="col-title"></h2>
+        <div class="count"></div>
+      </div>
+      <div class="tasks" aria-live="polite"></div>
+      <div class="add-row">
+        <input type="text" class="input-new" placeholder="Nova tarefa..." aria-label="Nova tarefa" />
+        <button class="btn-add">+</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="card-template">
+    <div class="card" draggable="true">
+      <p class="card-text"></p>
+      <div class="meta">
+        <span class="created"></span>
+        <div>
+          <button class="btn-edit" title="Editar">✏️</button>
+          <button class="btn-delete" title="Remover">🗑️</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script>
+  // Kanban simples — arquitetura profissional e modular
+  (function(){
+    'use strict';
+
+    const STORAGE_KEY = 'kanban-board-v1';
+
+    const defaultData = [
+      {id: 'todo', title: 'A Fazer', cards: [
+        {id: idFor(), text: 'Ex: Validar requisitos do projeto', created: Date.now()}
+      ]},
+      {id: 'doing', title: 'Em Progresso', cards: [
+        {id: idFor(), text: 'Ex: Implementar drag and drop', created: Date.now()}
+      ]},
+      {id: 'done', title: 'Concluído', cards: []}
+    ];
+
+    // utilidades
+    function idFor(){return 'c_'+Math.random().toString(36).slice(2,9)}
+    function qs(sel,ctx=document){return ctx.querySelector(sel)}
+    function qsa(sel,ctx=document){return Array.from(ctx.querySelectorAll(sel))}
+
+    // state
+    let board = load() || defaultData;
+
+    // render
+    const boardEl = qs('#board');
+    const colTpl = qs('#column-template');
+    const cardTpl = qs('#card-template');
+
+    function render(){
+      boardEl.innerHTML = '';
+      board.forEach(col => {
+        const node = colTpl.content.firstElementChild.cloneNode(true);
+        node.dataset.colId = col.id;
+        qs('.col-title',node).textContent = col.title;
+        qs('.count',node).textContent = col.cards.length || '';
+
+        const tasksEl = qs('.tasks',node);
+        if(col.cards.length===0){
+          const empty = document.createElement('div');
+          empty.className='empty-drop';
+          empty.textContent='Nenhuma tarefa — solte aqui ou adicione uma.';
+          tasksEl.appendChild(empty);
+        }
+
+        col.cards.forEach(card => {
+          const cnode = cardTpl.content.firstElementChild.cloneNode(true);
+          cnode.dataset.cardId = card.id;
+          qs('.card-text',cnode).textContent = card.text;
+          qs('.created',cnode).textContent = timeAgo(card.created);
+
+          // events: edit, delete
+          qs('.btn-delete',cnode).addEventListener('click',()=>{ removeCard(col.id, card.id); });
+          qs('.btn-edit',cnode).addEventListener('click',()=>{ editCard(col.id, card.id); });
+
+          // drag events
+          cnode.addEventListener('dragstart', onDragStart);
+          cnode.addEventListener('dragend', onDragEnd);
+
+          tasksEl.appendChild(cnode);
+        });
+
+        // add handlers
+        qs('.btn-add',node).addEventListener('click', ()=>{
+          const input = qs('.input-new',node);
+          if(input.value.trim()) addCard(col.id, input.value.trim()), input.value='';
+        });
+        qs('.input-new',node).addEventListener('keypress', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); qs('.btn-add',node).click(); } });
+
+        // allow drop
+        tasksEl.addEventListener('dragover', onDragOver);
+        tasksEl.addEventListener('drop', onDrop);
+
+        boardEl.appendChild(node);
+      });
+
+      attachMisc();
+      save();
+    }
+
+    // CRUD
+    function addCard(colId, text){
+      const col = board.find(c=>c.id===colId);
+      if(!col) return;
+      col.cards.unshift({id:idFor(), text, created: Date.now()});
+      render();
+    }
+    function removeCard(colId, cardId){
+      const col = board.find(c=>c.id===colId);
+      if(!col) return;
+      col.cards = col.cards.filter(c=>c.id!==cardId);
+      render();
+    }
+    function editCard(colId, cardId){
+      const col = board.find(c=>c.id===colId); if(!col) return;
+      const card = col.cards.find(c=>c.id===cardId); if(!card) return;
+      const updated = prompt('Editar tarefa:', card.text);
+      if(updated===null) return; // cancel
+      card.text = updated.trim() || card.text;
+      render();
+    }
+
+    // drag/drop handlers
+    let dragged = null;
+    function onDragStart(e){
+      dragged = e.currentTarget;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragged.dataset.cardId);
+      requestAnimationFrame(()=>dragged.classList.add('dragging'));
+    }
+    function onDragEnd(){ if(dragged) dragged.classList.remove('dragging'); dragged=null; }
+
+    function onDragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect='move'; }
+
+    function onDrop(e){
+      e.preventDefault();
+      const tasksEl = e.currentTarget;
+      const cardId = e.dataTransfer.getData('text/plain');
+      if(!cardId) return;
+
+      // find source column and card
+      let sourceCol, cardObj;
+      board.forEach(c=>{
+        const found = c.cards.find(x=>x.id===cardId);
+        if(found){ sourceCol=c; cardObj=found; }
+      });
+      if(!cardObj) return;
+
+      // remove from source
+      sourceCol.cards = sourceCol.cards.filter(x=>x.id!==cardId);
+
+      // determine target column id
+      const targetColNode = tasksEl.closest('.column');
+      const targetColId = targetColNode.dataset.colId;
+      const targetCol = board.find(x=>x.id===targetColId);
+      // add to top
+      targetCol.cards.unshift(cardObj);
+
+      render();
+    }
+
+    // storage
+    function save(){
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(board)); }
+      catch(e){ console.warn('Não foi possível salvar no LocalStorage',e); }
+    }
+    function load(){
+      try{ const raw = localStorage.getItem(STORAGE_KEY); return raw? JSON.parse(raw):null; }
+      catch(e){ console.warn('Erro ao carregar LocalStorage',e); return null; }
+    }
+
+    // utilities
+    function timeAgo(ts){
+      const diff = Math.floor((Date.now()-ts)/1000);
+      if(diff<60) return diff+'s';
+      if(diff<3600) return Math.floor(diff/60)+'m';
+      if(diff<86400) return Math.floor(diff/3600)+'h';
+      return Math.floor(diff/86400)+'d';
+    }
+
+    // misc actions
+    function attachMisc(){
+      qs('#btn-reset').onclick = ()=>{
+        if(confirm('Tem certeza que deseja limpar o board? Isso removerá todas as tarefas.')){
+          board = defaultData.map(c=>({id:c.id,title:c.title,cards:[]})); render();
+        }
+      };
+      qs('#btn-export').onclick = ()=>{
+        const blob = new Blob([JSON.stringify(board, null, 2)], {type:'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href=url; a.download = 'kanban-board.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      };
+
+      // Accessibility: keyboard add focus
+      qsa('.card').forEach(c=> c.tabIndex=0);
+    }
+
+    // initial render
+    render();
+
+    // expose for debugging (professional: limited exposure)
+    window.__kanban = {
+      getBoard: ()=>JSON.parse(JSON.stringify(board)),
+      setBoard: (b)=>{board=b; render();}
+    };
+
+  })();
+  </script>
+</body>
+</html>
